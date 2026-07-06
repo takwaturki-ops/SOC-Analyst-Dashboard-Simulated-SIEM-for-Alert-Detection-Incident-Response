@@ -5,8 +5,11 @@ Ajout : surveillance temps réel via inotify.
 """
 
 import os
+import stat
 import hashlib
+import threading
 from inotify_simple import INotify, flags
+from flask import Flask, jsonify, request
 
 # --------------------------------------------------------------------------
 # Configuration
@@ -51,7 +54,39 @@ def read_last_known_hash() -> str:
 def write_last_known_hash(h: str):
     with open(HASH_STATE_FILE, "w") as f:
         f.write(h or "")
+def get_file_metadata(path: str) -> dict:
+    try:
+        st = os.stat(path)
+        return {
+            "mode_octal": oct(stat.S_IMODE(st.st_mode)),
+            "uid": st.st_uid,
+            "gid": st.st_gid,
+            "is_executable": bool(st.st_mode & stat.S_IXUSR),
+            "size_bytes": st.st_size,
+        }
+    except FileNotFoundError:
+        return {"error": "fichier introuvable (supprimé ?)"}
 
+
+def perform_full_audit(trigger_source: str = "manuel") -> dict:
+    current_hash = compute_sha256(WATCHED_FILE)
+    previous_hash = read_last_known_hash()
+    metadata = get_file_metadata(WATCHED_FILE)
+    integrity_ok = (previous_hash is None) or (current_hash == previous_hash)
+
+    result = {
+        "trigger_source": trigger_source,
+        "sha256_current": current_hash,
+        "sha256_previous": previous_hash,
+        "integrity_ok": integrity_ok,
+        "metadata": metadata,
+    }
+
+    if current_hash:
+        write_last_known_hash(current_hash)
+
+    print(f"[AUDIT] source={trigger_source} | integrity_ok={integrity_ok}")
+    return result
 
 # --------------------------------------------------------------------------
 # Surveillance temps réel (inotify)
@@ -113,6 +148,28 @@ def realtime_watch_loop():
 
             if current_hash:
                 write_last_known_hash(current_hash)
+# --------------------------------------------------------------------------
+# API HTTP (mode "à la demande")
+# --------------------------------------------------------------------------
+app = Flask(__name__)
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok", "watched_file": WATCHED_FILE})
+
+
+@app.route("/audit", methods=["POST"])
+def trigger_audit():
+    body = request.get_json(silent=True) or {}
+    source = body.get("source", "api_http")
+    result = perform_full_audit(trigger_source=source)
+    return jsonify(result), 200
+
 
 if __name__ == "__main__":
-    realtime_watch_loop()
+    watcher_thread = threading.Thread(target=realtime_watch_loop, daemon=True)
+    watcher_thread.start()
+
+    print("[INFO] API HTTP démarrée sur le port 8000")
+    app.run(host="0.0.0.0", port=8000)
