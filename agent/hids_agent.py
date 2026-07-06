@@ -10,13 +10,15 @@ import hashlib
 import threading
 from inotify_simple import INotify, flags
 from flask import Flask, jsonify, request
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # --------------------------------------------------------------------------
 # Configuration
 # --------------------------------------------------------------------------
 WATCHED_FILE = os.environ.get("WATCHED_FILE", "/data/sensitive_config.txt")
 STATE_DIR = os.environ.get("STATE_DIR", "/data/state")
-
+CRON_HOUR = int(os.environ.get("CRON_HOUR", 2))
+CRON_MINUTE = int(os.environ.get("CRON_MINUTE", 0))
 os.makedirs(STATE_DIR, exist_ok=True)
 
 HASH_STATE_FILE = os.path.join(STATE_DIR, "last_known_sha256.txt")
@@ -166,8 +168,26 @@ def trigger_audit():
     result = perform_full_audit(trigger_source=source)
     return jsonify(result), 200
 
+# --------------------------------------------------------------------------
+# Planification (mode "cron" - check-up quotidien automatique)
+# --------------------------------------------------------------------------
+def start_scheduler():
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(
+        perform_full_audit,
+        trigger="cron",
+        hour=CRON_HOUR,
+        minute=CRON_MINUTE,
+        kwargs={"trigger_source": "cron_planifie"},
+        id="daily_routine_audit",
+    )
+    scheduler.start()
+    print(f"[INFO] Planificateur cron démarré : audit quotidien à {CRON_HOUR:02d}:{CRON_MINUTE:02d}")
+    return scheduler
 
 if __name__ == "__main__":
+    start_scheduler()
+
     watcher_thread = threading.Thread(target=realtime_watch_loop, daemon=True)
     watcher_thread.start()
 
