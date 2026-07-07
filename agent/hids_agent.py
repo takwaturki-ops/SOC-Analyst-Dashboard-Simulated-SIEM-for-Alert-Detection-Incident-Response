@@ -336,20 +336,29 @@ def perform_full_audit(trigger_source: str = "manuel") -> dict:
 
 
 # --------------------------------------------------------------------------
-# Surveillance temps réel (inotify)
+# SURVEILLANCE TEMPS RÉEL (inotify)
 # --------------------------------------------------------------------------
-# NOTE IMPORTANTE (limite technique documentée) :
-# inotify ne dispose PAS d'un flag natif "exécution". Le noyau Linux ne
-# distingue pas au niveau inotify un `cat fichier` d'un `./fichier` : les
-# deux génèrent OPEN + ACCESS + CLOSE_NOWRITE. La détection fiable d'une
-# exécution nécessite fanotify (FAN_OPEN_EXEC_PERM) ou auditd, qui
-# demandent des capacités noyau élargies (CAP_SYS_ADMIN) dans le conteneur.
+# inotify est un mécanisme du noyau Linux qui permet à un programme de se
+# faire "prévenir" instantanément quand quelque chose se passe sur un
+# fichier ou un dossier (ouverture, écriture, changement de droits...),
+# sans avoir à vérifier le fichier en boucle ("polling"). C'est beaucoup
+# plus efficace en performance qu'une boucle qui recalculerait le hash
+# toutes les secondes.
 #
-# Pour rester dans le périmètre du challenge (conteneur non privilégié),
-# on applique une heuristique : si le fichier possède le bit +x ET qu'un
-# événement d'ouverture est détecté, on le remonte comme une tentative
-# d'exécution potentielle plutôt qu'une simple lecture. Cette limite est
-# à mentionner explicitement dans le rapport/soutenance.
+# WATCH_FLAGS définit la LISTE des types d'évènements que l'on souhaite
+# recevoir de la part du noyau pour le dossier contenant le fichier
+# surveillé :
+#   - MODIFY       : le contenu du fichier a été écrit/modifié
+#   - OPEN         : le fichier a été ouvert (lecture ou écriture)
+#   - ACCESS       : le contenu du fichier a été lu
+#   - ATTRIB       : les métadonnées ont changé (chmod, chown, touch...)
+#   - CLOSE_WRITE  : le fichier a été fermé après avoir été ouvert en écriture
+#   - CLOSE_NOWRITE: le fichier a été fermé après une ouverture en lecture seule
+#   - MOVED_TO / CREATE : un fichier a été créé ou déplacé DANS le dossier
+#                          surveillé (cas des éditeurs qui remplacent le
+#                          fichier au lieu de le modifier en place - voir
+#                          plus bas)
+#   - MOVED_FROM / DELETE : le fichier a été déplacé ou supprimé du dossier
 WATCH_FLAGS = (
     flags.MODIFY
     | flags.OPEN
@@ -365,57 +374,156 @@ WATCH_FLAGS = (
 
 
 def classify_event(event_flags: list, path: str) -> str:
+    """
+    Traduit une liste brute de flags inotify (souvent plusieurs flags
+    combinés pour un même évènement) en UNE catégorie métier lisible,
+    utilisée ensuite dans les logs et dans l'alerte envoyée à n8n.
+
+    L'ordre des "if" est important : on teste d'abord les évènements les
+    plus spécifiques/critiques (changement de droits, modification de
+    contenu) avant de retomber sur les cas plus génériques (lecture simple).
+
+    ------------------------------------------------------------------
+    LIMITE TECHNIQUE IMPORTANTE — détection d'exécution
+    ------------------------------------------------------------------
+    inotify ne dispose PAS d'un flag natif "exécution". Concrètement, le
+    noyau Linux ne fait AUCUNE différence au niveau inotify entre :
+        cat sensitive_config.txt        (simple lecture)
+        ./sensitive_config.txt          (tentative d'exécution)
+    Les deux génèrent exactement la même séquence d'évènements :
+    OPEN + ACCESS + CLOSE_NOWRITE.
+
+    La détection fiable d'une exécution nécessiterait fanotify (avec le
+    flag FAN_OPEN_EXEC_PERM) ou le sous-système auditd, qui demandent tous
+    les deux des capacités noyau élevées (CAP_SYS_ADMIN) que l'on ne veut
+    pas donner à un conteneur non privilégié pour des raisons de sécurité
+    (donner CAP_SYS_ADMIN reviendrait presque à donner un accès root au
+    conteneur, ce qui est contraire à l'esprit "moindre privilège" d'un HIDS).
+
+    SOLUTION RETENUE ICI (heuristique, à assumer en soutenance) :
+    Si le fichier possède le bit +x (exécutable) ET qu'un évènement
+    d'ouverture est détecté, on le remonte comme "TENTATIVE_EXECUTION_POSSIBLE"
+    plutôt que comme une simple lecture. Ce n'est pas une preuve formelle
+    d'exécution, mais un signal suffisant pour alerter l'équipe dans le
+    contexte de ce challenge.
+    ------------------------------------------------------------------
+
+    Paramètres :
+        event_flags : liste des flags inotify bruts pour cet évènement
+                      (déjà décodés depuis le masque binaire via
+                      flags.from_mask() dans realtime_watch_loop())
+        path        : chemin du fichier surveillé, nécessaire pour aller
+                      consulter son bit d'exécution via get_file_metadata()
+
+    Retourne une chaîne de caractères identifiant le type d'évènement.
+    """
+    # Cas 1 : changement des permissions ou du propriétaire (chmod/chown/touch)
     if flags.ATTRIB in event_flags:
         return "CHANGEMENT_PERMISSIONS_OU_PROPRIETAIRE"
 
+    # Cas 2 : le contenu du fichier a été écrit puis la modification finalisée
     if flags.MODIFY in event_flags or flags.CLOSE_WRITE in event_flags:
         return "MODIFICATION_CONTENU"
 
+    # Cas 3 : remplacement atomique du fichier (comportement typique de vim/nano :
+    # ils écrivent un fichier temporaire puis le renomment à la place de l'original,
+    # ce qui NE déclenche PAS de flag MODIFY classique mais un CREATE/MOVED_TO)
     if flags.MOVED_TO in event_flags or flags.CREATE in event_flags:
         return "MODIFICATION_CONTENU_VIA_REMPLACEMENT_ATOMIQUE"
 
+    # Cas 4 : le fichier a été déplacé ailleurs ou supprimé du dossier surveillé
     if flags.DELETE in event_flags or flags.MOVED_FROM in event_flags:
         return "SUPPRESSION_OU_DEPLACEMENT"
 
+    # Cas 5 : ouverture / lecture / copie du fichier (voir limite technique ci-dessus
+    # concernant la distinction lecture vs exécution)
     if flags.OPEN in event_flags or flags.ACCESS in event_flags or flags.CLOSE_NOWRITE in event_flags:
         metadata = get_file_metadata(path)
         if metadata.get("is_executable"):
             return "TENTATIVE_EXECUTION_POSSIBLE"
         return "OUVERTURE_OU_LECTURE"
 
+    # Cas par défaut : évènement reçu mais non couvert par les catégories ci-dessus
     return "EVENEMENT_INCONNU"
 
 
 def realtime_watch_loop():
+    """
+    Boucle principale de surveillance temps réel. Tourne en continu dans
+    un thread daemon dédié (voir la fin du script), pendant toute la durée
+    de vie du conteneur.
+
+    Fonctionnement :
+        1. On s'assure que le fichier existe avant de commencer à le
+           surveiller (sinon inotify n'aurait rien à observer).
+        2. On crée une instance INotify() et on lui demande de surveiller
+           le DOSSIER contenant le fichier (et non le fichier lui-même) :
+           c'est nécessaire car certains évènements comme la suppression
+           ou le remplacement atomique ne peuvent être captés qu'au niveau
+           du dossier parent.
+        3. Si aucun hash de référence n'existe encore (premier lancement),
+           on initialise l'état avec le hash actuel du fichier.
+        4. On entre dans une boucle infinie : inotify.read(timeout=None)
+           est une fonction BLOQUANTE qui met le thread en pause tant
+           qu'aucun évènement ne se produit (donc 0% CPU consommé en
+           attente, contrairement à une boucle de polling classique).
+        5. Pour chaque évènement reçu, on filtre déjà ceux qui ne
+           concernent pas notre fichier cible (le dossier peut contenir
+           d'autres fichiers), on classe l'évènement, on recalcule le hash,
+           puis on envoie l'alerte à n8n si ce n'est pas un doublon.
+
+    Anti-spam (variable last_logged) :
+        Un seul geste utilisateur (ex: ouvrir un fichier avec `cat`) peut
+        déclencher PLUSIEURS évènements inotify quasi simultanés (OPEN puis
+        ACCESS puis CLOSE_NOWRITE). Pour éviter d'envoyer 3 alertes
+        identiques à n8n pour une seule action réelle, on mémorise la
+        dernière "signature" (type d'évènement + hash) déjà loguée, et on
+        ignore les répétitions immédiates identiques.
+    """
     ensure_watched_file_exists()
     inotify = INotify()
+    # os.path.dirname(WATCHED_FILE) : on surveille le DOSSIER parent, pas le
+    # fichier directement, car un fichier supprimé/renommé ne peut plus être
+    # surveillé lui-même une fois qu'il n'existe plus.
     watch_dir = os.path.dirname(WATCHED_FILE) or "."
     inotify.add_watch(watch_dir, WATCH_FLAGS)
     print(f"[INFO] Surveillance temps réel démarrée sur : {watch_dir}")
 
+    # Initialisation du hash de référence si c'est le tout premier démarrage
     if read_last_known_hash() is None:
         write_last_known_hash(compute_sha256(WATCHED_FILE))
 
     last_logged = None  # évite de spammer le même évènement identique
 
     while True:
+        # inotify.read() est bloquant : le thread "dort" tant qu'il n'y a
+        # aucun évènement, ce qui est très économe en ressources.
         for event in inotify.read(timeout=None):
+            # On ne s'intéresse qu'aux évènements concernant NOTRE fichier
+            # (le dossier surveillé peut contenir d'autres fichiers).
             if event.name != os.path.basename(WATCHED_FILE):
                 continue
 
+            # event.mask est un entier binaire ; flags.from_mask() le
+            # décode en une liste de constantes lisibles (ex: [MODIFY, CLOSE_WRITE])
             event_flags = flags.from_mask(event.mask)
             event_type = classify_event(event_flags, WATCHED_FILE)
 
+            # Cas particulier : le fichier a disparu entre l'évènement et
+            # notre traitement (ex: suppression). On ne peut pas calculer
+            # de hash sur un fichier qui n'existe plus.
             if not os.path.exists(WATCHED_FILE):
                 print(f"[EVENEMENT] FICHIER_ABSENT | type_brut={event_type}")
                 send_alert_to_n8n("FICHIER_SUPPRIME", {"type_brut": event_type})
-                last_logged = None
+                last_logged = None  # on réinitialise pour ne pas bloquer les futurs évènements
                 continue
 
             current_hash = compute_sha256(WATCHED_FILE)
             previous_hash = read_last_known_hash()
             content_changed = current_hash != previous_hash
 
+            # Anti-doublon : si on a déjà loggé exactement ce type
+            # d'évènement avec ce même hash juste avant, on l'ignore.
             signature = (event_type, current_hash)
             if signature == last_logged:
                 continue  # doublon immédiat, on ignore
@@ -434,23 +542,54 @@ def realtime_watch_loop():
 
 
 # --------------------------------------------------------------------------
-# API HTTP (mode "à la demande")
+# API HTTP (mode "à la demande" - Contrainte 3, mode 2 du sujet)
 # --------------------------------------------------------------------------
+# Flask expose un petit serveur web permettant de déclencher un audit à
+# distance, par exemple depuis n8n (quand un admin tape /run-audit sur
+# Telegram) ou depuis n'importe quel outil tiers du réseau Docker.
 app = Flask(__name__)
 
 
 @app.route("/health", methods=["GET"])
 def health():
+    """
+    Endpoint de vérification de vie ("healthcheck"). Ne nécessite aucune
+    authentification car il ne renvoie aucune information sensible et sert
+    uniquement à vérifier que le conteneur répond bien (utile pour
+    docker-compose healthcheck, ou pour un monitoring externe).
+    """
     return jsonify({"status": "ok", "watched_file": WATCHED_FILE})
 
 
 @app.route("/audit", methods=["POST"])
 def trigger_audit():
+    """
+    Endpoint principal du mode "à la demande". Toute requête POST reçue
+    ici déclenche immédiatement un audit complet du fichier surveillé,
+    exactement comme le ferait le cron quotidien, mais à la demande.
+
+    Sécurité : on exige un header "X-API-Key" correspondant exactement à
+    la variable d'environnement HIDS_API_KEY. Sans cette vérification,
+    n'importe quel conteneur ou service ayant accès au réseau Docker
+    interne pourrait déclencher des audits à volonté (déni de service
+    léger, ou bruit inutile dans les alertes).
+
+    Corps de requête JSON optionnel :
+        { "source": "n8n_telegram_bot" }
+    Le champ "source" permet de tracer précisément QUI a demandé cet
+    audit (utile pour distinguer un déclenchement Telegram d'un simple
+    test manuel avec curl). S'il est absent, on utilise "api_http" par défaut.
+
+    Retourne le résultat complet de l'audit au format JSON avec un code
+    HTTP 200 en cas de succès, ou 401 si la clé API est invalide/absente.
+    """
     # Authentification simple par clé API (header X-API-Key).
     provided_key = request.headers.get("X-API-Key", "")
     if provided_key != API_KEY:
         return jsonify({"error": "unauthorized"}), 401
 
+    # get_json(silent=True) : ne lève pas d'exception si le corps n'est pas
+    # du JSON valide ou est absent ; renvoie simplement None dans ce cas.
     body = request.get_json(silent=True) or {}
     source = body.get("source", "api_http")
     result = perform_full_audit(trigger_source=source)
@@ -458,9 +597,29 @@ def trigger_audit():
 
 
 # --------------------------------------------------------------------------
-# Planification (mode "cron" - check-up quotidien automatique)
+# PLANIFICATION (mode "cron" - Contrainte 3, mode 1 du sujet)
 # --------------------------------------------------------------------------
 def start_scheduler():
+    """
+    Configure et démarre APScheduler pour exécuter automatiquement un
+    audit complet une fois par jour, à l'heure définie par CRON_HOUR et
+    CRON_MINUTE (par défaut 02h00, une heure creuse typique pour un
+    check-up de routine sans impacter la production).
+
+    BackgroundScheduler fait tourner cette tâche dans SON PROPRE thread
+    interne, en parallèle du reste du script (serveur Flask + watcher
+    inotify) : les trois mécanismes coexistent sans se bloquer les uns
+    les autres.
+
+    trigger="cron" avec hour=X, minute=Y reproduit le comportement d'une
+    ligne crontab classique (ex: équivalent de "0 2 * * *" pour 02h00
+    tous les jours).
+
+    kwargs={"trigger_source": "cron_planifie"} : permet de transmettre un
+    argument nommé à la fonction perform_full_audit() à chaque exécution,
+    pour que l'alerte générée indique clairement qu'elle vient du
+    check-up automatique et non d'une demande manuelle.
+    """
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         perform_full_audit,
@@ -475,13 +634,29 @@ def start_scheduler():
     return scheduler
 
 
+# --------------------------------------------------------------------------
+# POINT D'ENTRÉE PRINCIPAL
+# --------------------------------------------------------------------------
+# Ce bloc ne s'exécute que si le script est lancé directement
+# (ex: `python3 hids_agent.py` ou via l'ENTRYPOINT du conteneur Docker),
+# et non s'il est importé comme module par un autre script.
 if __name__ == "__main__":
+    # 1) Démarrage du planificateur cron (tourne dans son propre thread interne)
     start_scheduler()
 
+    # 2) Démarrage du watcher inotify dans un thread "daemon" : un thread
+    # daemon s'arrête automatiquement quand le programme principal se
+    # termine, on n'a donc pas besoin de le stopper explicitement.
     watcher_thread = threading.Thread(target=realtime_watch_loop, daemon=True)
     watcher_thread.start()
 
+    # 3) Démarrage du serveur Flask en dernier, car app.run() est une
+    # fonction BLOQUANTE qui garde le processus principal en vie tant que
+    # le serveur tourne. Tout ce qui doit démarrer AVANT (scheduler, watcher)
+    # doit donc être lancé avant cet appel.
     print("[INFO] API HTTP démarrée sur le port 8000")
-    # threaded=True : évite qu'un audit en cours (calcul SHA-256) ne
-    # bloque la réception d'autres requêtes (ex: alerte Telegram/n8n).
+    # threaded=True : permet à Flask de traiter plusieurs requêtes HTTP en
+    # parallèle (ex: /health et /audit en même temps) au lieu de les traiter
+    # une par une, ce qui éviterait qu'un audit long (calcul de hash) ne
+    # bloque la réception d'autres requêtes entrantes.
     app.run(host="0.0.0.0", port=8000, threaded=True)
