@@ -152,7 +152,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const alert = $input.item.json;\nreturn {\n  json: {\n    ...alert,\n    incident_id: $execution.id,\n    ack_webhook_url: `http://n8n_automation:5678/webhook/hids-ack/${$execution.id}`\n  }\n};"
+        "jsCode": "const alert = $input.item.json;\nreturn {\n  json: {\n    ...alert,\n    incident_id: $execution.id\n  }\n};"
       },
       "id": "32c3694b-1e7c-49c8-a345-56f330e1af7a",
       "name": "Preparer contexte incident",
@@ -165,6 +165,9 @@
     },
     {
       "parameters": {
+        "authentication": "botToken",
+        "resource": "message",
+        "operation": "send",
         "guildId": {
           "__rl": true,
           "value": "1524213430356283442",
@@ -172,8 +175,14 @@
           "cachedResultName": "Lab HIDS Test",
           "cachedResultUrl": "https://discord.com/channels/1524213430356283442"
         },
-        "name": "alerte-hids",
-        "options": {}
+        "sendTo": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "alerte-hids",
+          "mode": "list",
+          "cachedResultName": "alerte-hids"
+        },
+        "content": "=🚨 ALERTE HIDS [{{ $json.event_type }}]\nFichier : {{ $json.watched_file }}\nHash actuel : {{ $json.details.sha256_current }}\nIncident : {{ $json.incident_id }}\n\nConfirmer : {{ $execution.resumeUrl }}"
       },
       "id": "13997086-6ed2-4f5e-9d7c-a98fbf0d71ed",
       "name": "Discord - Diffusion alerte",
@@ -193,8 +202,8 @@
     },
     {
       "parameters": {
-        "chatId": "={{ $env.TELEGRAM_ADMIN_CHAT_ID }}",
-        "text": "=ALERTE HIDS [{{ $json.event_type }}]\nFichier : {{ $json.watched_file }}\nHash actuel : {{ $json.details.sha256_current }}\nIncident : {{ $json.incident_id }}\n\nCliquez ici pour confirmer la prise en charge :\n{{ $json.ack_webhook_url }}",
+        "chatId": "=8557363403",
+        "text": "=ALERTE HIDS [{{ $json.event_type }}]\nFichier : {{ $json.watched_file }}\nHash actuel : {{ $json.details.sha256_current }}\nIncident : {{ $json.incident_id }}\n\nCliquez ici pour confirmer la prise en charge :\n{{ $execution.resumeUrl }}",
         "additionalFields": {}
       },
       "id": "2f1072e2-5ec6-4dfa-88d6-90e859e7306d",
@@ -216,10 +225,10 @@
     {
       "parameters": {
         "fromEmail": "hids-alert@secops.local",
-        "toEmail": "={{ $env.SECOPS_TEAM_EMAIL }}",
+        "toEmail": "=secops@example.com",
         "subject": "=[HIDS] Alerte securite - {{ $json.event_type }}",
         "emailFormat": "text",
-        "text": "=Un evenement critique a ete detecte par l'agent HIDS.\n\nFichier surveille : {{ $json.watched_file }}\nType d'evenement : {{ $json.event_type }}\nHash SHA-256 actuel : {{ $json.details.sha256_current }}\nHorodatage : {{ $json.timestamp }}\nIdentifiant incident : {{ $json.incident_id }}\n\nConfirmer la prise en charge : {{ $json.ack_webhook_url }}\n\nCeci est une notification automatique du systeme HIDS.",
+        "text": "=Un evenement critique a ete detecte par l'agent HIDS.\n\nFichier surveille : {{ $json.watched_file }}\nType d'evenement : {{ $json.event_type }}\nHash SHA-256 actuel : {{ $json.details.sha256_current }}\nHorodatage : {{ $json.timestamp }}\nIdentifiant incident : {{ $json.incident_id }}\n\nConfirmer la prise en charge : {{ $execution.resumeUrl }}\n\nCeci est une notification automatique du systeme HIDS.",
         "options": {}
       },
       "id": "ecf563a0-1fda-4bc4-8ce1-4ce4028f19f0",
@@ -305,6 +314,9 @@
     },
     {
       "parameters": {
+        "authentication": "botToken",
+        "resource": "message",
+        "operation": "send",
         "guildId": {
           "__rl": true,
           "value": "1524213430356283442",
@@ -312,8 +324,14 @@
           "cachedResultName": "Lab HIDS Test",
           "cachedResultUrl": "https://discord.com/channels/1524213430356283442"
         },
-        "name": "alerte-hids",
-        "options": {}
+        "sendTo": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "alerte-hids",
+          "mode": "list",
+          "cachedResultName": "alerte-hids"
+        },
+        "content": "=🚨 RAPPEL CRITIQUE - HIDS\nAucune reponse recue depuis 30 minutes.\nIncident {{ $('Preparer contexte incident').item.json.incident_id }} toujours en souffrance.\n\nConfirmer maintenant : {{ $execution.resumeUrl }}"
       },
       "id": "3d43c90d-26be-442f-8085-a74df1af7f8a",
       "name": "Discord - Rappel critique",
@@ -333,8 +351,8 @@
     },
     {
       "parameters": {
-        "chatId": "={{ $env.TELEGRAM_ADMIN_CHAT_ID }}",
-        "text": "=RAPPEL CRITIQUE - SEVERITE MAXIMALE\nAucune reponse recue depuis 30 minutes.\nIncident {{ $('Preparer contexte incident').item.json.incident_id }} toujours en souffrance.\n\nConfirmer maintenant : {{ $('Preparer contexte incident').item.json.ack_webhook_url }}",
+        "chatId": "=8557363403",
+        "text": "=RAPPEL CRITIQUE - SEVERITE MAXIMALE\nAucune reponse recue depuis 30 minutes.\nIncident {{ $('Preparer contexte incident').item.json.incident_id }} toujours en souffrance.\n\nConfirmer maintenant : {{ $execution.resumeUrl }}",
         "additionalFields": {}
       },
       "id": "cab3f40e-4ae6-4d37-80f6-d6c17b2ef8db",
@@ -356,10 +374,10 @@
     {
       "parameters": {
         "fromEmail": "hids-alert@secops.local",
-        "toEmail": "={{ $env.SECOPS_TEAM_EMAIL }}",
+        "toEmail": "=secops@example.com",
         "subject": "=[HIDS] RAPPEL CRITIQUE - Incident non pris en charge",
         "emailFormat": "text",
-        "text": "=Aucune reponse n'a ete recue dans les 30 minutes suivant l'alerte initiale.\n\nIncident : {{ $('Preparer contexte incident').item.json.incident_id }}\nFichier : {{ $('Preparer contexte incident').item.json.watched_file }}\n\nConfirmer la prise en charge : {{ $('Preparer contexte incident').item.json.ack_webhook_url }}\n\nSeverite : MAXIMALE. Intervention immediate requise.",
+        "text": "=Aucune reponse n'a ete recue dans les 30 minutes suivant l'alerte initiale.\n\nIncident : {{ $('Preparer contexte incident').item.json.incident_id }}\nFichier : {{ $('Preparer contexte incident').item.json.watched_file }}\n\nConfirmer la prise en charge : {{ $execution.resumeUrl }}\n\nSeverite : MAXIMALE. Intervention immediate requise.",
         "options": {}
       },
       "id": "76eb86b9-6cf0-4dce-843f-611e0ee5bbec",
