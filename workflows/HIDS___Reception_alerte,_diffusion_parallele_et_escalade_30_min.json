@@ -165,43 +165,6 @@
     },
     {
       "parameters": {
-        "authentication": "botToken",
-        "resource": "message",
-        "operation": "send",
-        "guildId": {
-          "__rl": true,
-          "value": "1524213430356283442",
-          "mode": "list",
-          "cachedResultName": "Lab HIDS Test",
-          "cachedResultUrl": "https://discord.com/channels/1524213430356283442"
-        },
-        "sendTo": "channel",
-        "channelId": {
-          "__rl": true,
-          "value": "alerte-hids",
-          "mode": "list",
-          "cachedResultName": "alerte-hids"
-        },
-        "content": "=🚨 ALERTE HIDS [{{ $json.event_type }}]\nFichier : {{ $json.watched_file }}\nHash actuel : {{ $json.details.sha256_current }}\nIncident : {{ $json.incident_id }}\n\nConfirmer : {{ $execution.resumeUrl }}"
-      },
-      "id": "13997086-6ed2-4f5e-9d7c-a98fbf0d71ed",
-      "name": "Discord - Diffusion alerte",
-      "type": "n8n-nodes-base.discord",
-      "typeVersion": 2,
-      "position": [
-        1072,
-        -16
-      ],
-      "webhookId": "141b96d1-bade-492f-8a3c-51f1297d6c11",
-      "credentials": {
-        "discordBotApi": {
-          "id": "rX7q75zL8JIcYxAJ",
-          "name": "Discord Bot account 2"
-        }
-      }
-    },
-    {
-      "parameters": {
         "chatId": "=8557363403",
         "text": "=ALERTE HIDS [{{ $json.event_type }}]\nFichier : {{ $json.watched_file }}\nHash actuel : {{ $json.details.sha256_current }}\nIncident : {{ $json.incident_id }}\n\nCliquez ici pour confirmer la prise en charge :\n{{ $execution.resumeUrl }}",
         "additionalFields": {}
@@ -311,43 +274,6 @@
         1776,
         64
       ]
-    },
-    {
-      "parameters": {
-        "authentication": "botToken",
-        "resource": "message",
-        "operation": "send",
-        "guildId": {
-          "__rl": true,
-          "value": "1524213430356283442",
-          "mode": "list",
-          "cachedResultName": "Lab HIDS Test",
-          "cachedResultUrl": "https://discord.com/channels/1524213430356283442"
-        },
-        "sendTo": "channel",
-        "channelId": {
-          "__rl": true,
-          "value": "alerte-hids",
-          "mode": "list",
-          "cachedResultName": "alerte-hids"
-        },
-        "content": "=🚨 RAPPEL CRITIQUE - HIDS\nAucune reponse recue depuis 30 minutes.\nIncident {{ $('Preparer contexte incident').item.json.incident_id }} toujours en souffrance.\n\nConfirmer maintenant : {{ $execution.resumeUrl }}"
-      },
-      "id": "3d43c90d-26be-442f-8085-a74df1af7f8a",
-      "name": "Discord - Rappel critique",
-      "type": "n8n-nodes-base.discord",
-      "typeVersion": 2,
-      "position": [
-        1776,
-        224
-      ],
-      "webhookId": "2fff6a47-22f8-4c2a-ae51-88b37268cbdd",
-      "credentials": {
-        "discordBotApi": {
-          "id": "rX7q75zL8JIcYxAJ",
-          "name": "Discord Bot account 2"
-        }
-      }
     },
     {
       "parameters": {
@@ -484,28 +410,12 @@
       "main": [
         [
           {
-            "node": "Discord - Diffusion alerte",
-            "type": "main",
-            "index": 0
-          },
-          {
             "node": "Telegram - Diffusion alerte",
             "type": "main",
             "index": 0
           },
           {
             "node": "Email - Notification incident",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Discord - Diffusion alerte": {
-      "main": [
-        [
-          {
-            "node": "Attente de reponse (30 min)",
             "type": "main",
             "index": 0
           }
@@ -555,11 +465,6 @@
           }
         ],
         [
-          {
-            "node": "Discord - Rappel critique",
-            "type": "main",
-            "index": 0
-          },
           {
             "node": "Telegram - Rappel critique",
             "type": "main",
